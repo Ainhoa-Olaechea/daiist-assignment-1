@@ -24,17 +24,13 @@ manual steps in between:
 How you structure the code beyond that — file layout, function
 boundaries, naming — is your call to make and be able to defend.
 """
-"""
-train.py - the ONLY place where models are trained.
 
-Run with: uv run python main.py train
-Saves every trained model to models/ so the Gradio app can load them.
-"""
 from pathlib import Path
 
 import joblib
 import numpy as np
 import torch
+from torch import nn
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, log_loss, roc_auc_score
 
@@ -118,6 +114,54 @@ def predict_manual(w, b, X):
         return torch.sigmoid(z).numpy()
 
 
+# ===================================================================
+# Standard PyTorch: nn.Module + loss function + optimizer
+# ===================================================================
+class LogisticRegressionNet(nn.Module):
+    """The same model, written the standard PyTorch way."""
+
+    def __init__(self, n_features):
+        super().__init__()
+        self.linear = nn.Linear(n_features, 1)   # weights + bias in one layer
+        nn.init.zeros_(self.linear.weight)       # start at 0, like the manual
+        nn.init.zeros_(self.linear.bias)         # version -> fair comparison
+
+    def forward(self, x):
+        # Returns the raw score z (a "logit"); sigmoid is applied in the loss
+        return self.linear(x).squeeze(1)
+
+
+def train_standard_torch(Xtr, ytr, C, lr, epochs=EPOCHS):
+    """Same logistic regression, using PyTorch's ready-made building blocks."""
+    X = torch.tensor(Xtr, dtype=torch.float32)
+    y = torch.tensor(ytr, dtype=torch.float32)
+    n, d = X.shape
+
+    model = LogisticRegressionNet(d)
+    loss_fn = nn.BCEWithLogitsLoss()                        # sigmoid + log loss
+    optimizer = torch.optim.SGD(model.parameters(), lr=lr)  # plain gradient descent
+    l2 = 1.0 / (C * n)                                      # same brake as sklearn
+
+    losses = []
+    for epoch in range(epochs):
+        optimizer.zero_grad()                  # 1. reset old gradients
+        z = model(X)                           # 2. forward pass
+        loss = loss_fn(z, y) + 0.5 * l2 * (model.linear.weight ** 2).sum()  # 3. loss
+        loss.backward()                        # 4. backward pass
+        optimizer.step()                       # 5. update the weights
+        losses.append(loss.item())
+
+    return model, losses
+
+
+def predict_standard(model, X):
+    """Probability of cancellation from the nn.Module model."""
+    model.eval()
+    with torch.no_grad():
+        z = model(torch.tensor(X, dtype=torch.float32))
+        return torch.sigmoid(z).numpy()
+
+
 def main():
     MODELS_DIR.mkdir(exist_ok=True)
 
@@ -175,20 +219,33 @@ def main():
                 "losses": manual_losses}, MODELS_DIR / "torch_manual.pt")
     print(f"  training loss: start {manual_losses[0]:.4f} -> end {manual_losses[-1]:.4f}")
 
-    # ---------- 6. Results on VALIDATION (test is kept for the end) ----------
+    # ---------- 6. Standard PyTorch: same C, same learning rate, same epochs ----------
+    print(f"\nStandard PyTorch (nn.Module + SGD, lr = {best_lr}, {EPOCHS} epochs)")
+    std_model, std_losses = train_standard_torch(Xtr, ytr, C=best_C, lr=best_lr)
+    torch.save({"state_dict": std_model.state_dict(), "n_features": Xtr.shape[1],
+                "lr": best_lr, "C": best_C, "losses": std_losses},
+               MODELS_DIR / "torch_standard.pt")
+    print(f"  training loss: start {std_losses[0]:.4f} -> end {std_losses[-1]:.4f}")
+
+    # ---------- 7. Results on VALIDATION (test is kept for the end) ----------
     p_sk = sk_model.predict_proba(Xva)[:, 1]
     p_manual = predict_manual(w_manual, b_manual, Xva)
+    p_std = predict_standard(std_model, Xva)
     print("\nValidation results (threshold 0.5):")
     evaluate("Naive baseline", y_val, np.full(len(y_val), base_rate))
     evaluate("sklearn LogisticRegression", y_val, p_sk)
     evaluate("Manual PyTorch", y_val, p_manual)
+    evaluate("Standard PyTorch", y_val, p_std)
 
-    # Do sklearn and manual PyTorch agree?
-    print("\nAgreement sklearn vs manual PyTorch (validation):")
-    print(f"  average difference in probability: {np.abs(p_sk - p_manual).mean():.4f}")
-    print(f"  same yes/no decision: {((p_sk >= 0.5) == (p_manual >= 0.5)).mean():.1%}")
+    # Do the three versions agree?
+    print("\nAgreement between the three versions (validation):")
+    for name, a, b_ in [("sklearn vs manual", p_sk, p_manual),
+                        ("sklearn vs standard", p_sk, p_std),
+                        ("manual vs standard", p_manual, p_std)]:
+        print(f"  {name:20s} avg prob difference {np.abs(a - b_).mean():.4f} | "
+              f"same decision {((a >= 0.5) == (b_ >= 0.5)).mean():.1%}")
 
-    # ---------- 7. Which features matter most? ----------
+    # ---------- 8. Which features matter most? ----------
     names = pre.get_feature_names_out()
     coefs = sk_model.coef_[0]
     order = np.argsort(np.abs(coefs))[::-1][:10]
@@ -203,6 +260,11 @@ def main():
         n_ones = int((Xtr[:, i] == 1).sum())
         print(f"  {names[i]:40s} sklearn {coefs[i]:+.3f} | manual {w_manual[i]:+.3f} "
               f"| {n_ones} training rows")
+
+    # Manual vs standard should be (almost) identical: same algorithm
+    w_std = std_model.linear.weight.detach().numpy()[0]
+    print(f"\nLargest weight difference manual vs standard: "
+          f"{np.abs(w_manual.numpy() - w_std).max():.6f}")
 
 
 if __name__ == "__main__":
