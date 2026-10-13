@@ -269,3 +269,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
+    from evaluate import run_evaluation
+    run_evaluation()
