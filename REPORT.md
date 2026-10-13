@@ -3,238 +3,229 @@
 - **Name:** Ainhoa Olaechea
 - **Student ID:** 18680
 - **Email:** aolaechea.ieu2022@student.ie.edu
-- **Group:** A
+- **Group:** BBADBA A
 
 ## Dataset
 
-I used the **Hotel Booking Demand** dataset, downloaded from Kaggle (`hotel_bookings.csv`).
-It comes from a 2019 research paper by Antonio, Almeida & Nunes and contains real
-bookings from two hotels in Portugal: a City Hotel (Lisbon) and a Resort Hotel (Algarve).
+I used the Hotel Booking Demand dataset from Kaggle. It comes from a 2019 paper by Antonio,
+Almeida and Nunes and has real bookings from two hotels in Portugal: a city hotel in Lisbon
+and a resort hotel in the Algarve.
 
-- **One row = one room booking**, with what the hotel knew about it (lead time, length of
-  stay, number of guests, meal plan, price per night, booking channel, guest country,
-  previous cancellations, etc.) and whether it was eventually cancelled.
-- **Size:** 119,390 rows × 32 columns, arrivals from July 2015 to August 2017.
-- **Target:** `is_canceled` (1 = cancelled, 0 = the guest arrived). 37% of all bookings
-  were cancelled: 41.7% at the City Hotel and 27.8% at the Resort Hotel.
+Each row is one room booking. It tells you things the hotel knew when the booking was made,
+like how many days in advance it was booked, how many nights, how many guests, the price per
+night, the booking channel and the guest's country, and whether the booking was cancelled in
+the end. In total there are 119,390 bookings and 32 columns, with arrivals between July 2015
+and August 2017. The column I predict is `is_canceled` (1 if cancelled, 0 if the guest came).
 
-**Why I picked it:** cancellations are a real and expensive problem for hotels, the
-target is clearly defined, and the dataset has several traps (columns only known after
-the booking, time ordering, duplicate group bookings) that make feature engineering and
-the split decision important rather than trivial.
+I picked this dataset because cancellations are a real problem for hotels and the target is
+easy to understand. It also has some traps that made me think carefully: some columns are only
+filled in after the booking, the data is ordered in time, and there are many repeated rows from
+group bookings.
 
-**What I used:** only the City Hotel (79,330 bookings). I chose it because its demand is
-much less seasonal than the Resort Hotel's: its median price only moves between about
-€80 and €120 per night across the year, while the Resort goes from €48 in January to €188
-in August. With weaker seasonality, the cost of a cancellation is roughly the same in any
-month, so I can use one fixed cost per type of error instead of a different cost for
-every season. I cleaned the data and randomly sampled it down to 20,000 bookings to stay
-within the size guideline, using a fixed random seed (42) so that the same 20,000 bookings
-are selected every time the pipeline runs. The sample's cancellation rate (41.8%) matches
-the full City Hotel data (41.7%), so it is representative.
+I only used the City Hotel (79,330 bookings). The main reason is that its demand is much less
+seasonal than the resort's. The city hotel's median price only goes from about €80 to €120 a
+night during the year, while the resort goes from €48 in January to €188 in August. Because of
+that, a cancellation costs the city hotel roughly the same in any month, so I can use one fixed
+cost per mistake instead of a different cost for each season.
+
+After cleaning, I took a random sample of 20,000 bookings to stay within the size guideline. I
+used a fixed random seed (42) so the same 20,000 bookings are picked every time the code runs,
+which makes my results reproducible. The number 42 itself doesn't matter, only that it stays
+the same. The sample cancels 41.8% of the time, almost the same as the full city hotel data
+(41.7%), so it represents it well.
 
 ## Business / real-life framing
 
-**Scenario:** the City Hotel loses revenue when guests cancel late, because the room often
-stays empty. The model supports a **deposit policy**:
+The city hotel loses money when guests cancel late, because the room usually stays empty. My
+idea is to use the model to decide which guests should pay a deposit:
 
-| | |
-|---|---|
-| **Goal** | Reduce revenue lost to cancelled bookings and keep occupancy high |
-| **Model** | Predicts, *at the moment a booking is made*, the probability it will be cancelled |
-| **Action** | Bookings above a risk threshold must pay a deposit, refundable only up to 14 days before arrival |
+- **Goal:** lose less money from cancellations and keep the hotel full.
+- **Model:** when a booking is made, predict the probability that it will be cancelled.
+- **Action:** if the risk is high enough, the guest has to pay a deposit, which they only get
+  back if they cancel more than 14 days before arrival.
 
-**Why the City Hotel:** a real model is built for one client, and the two hotels behave
-very differently. The City Hotel has the bigger cancellation problem and steadier prices
-through the year (about €80–€120/night vs €48–€188 at the Resort), so one fixed cost per
-type of error is a reasonable approximation.
+I chose 14 days by looking at when guests actually cancel. In the city hotel data, 12% of
+cancellations happen in the last 7 days before arrival, 19% in the last 14 days and 33% in the
+last 30 days. Two weeks gives the hotel time to sell the room again, without being as strict as
+a 30-day rule. One downside is that 18.5% of guests book less than 14 days ahead, so for them
+the deposit would not be refundable at all.
 
-**Why a 14-day refund deadline:** in the City Hotel data, 12% of cancellations happen within
-7 days of arrival, 19% within 14 days and 33% within 30 days. Two weeks gives the hotel time
-to resell the room while being less strict than 30 days. One consequence: 18.5% of guests
-book less than 14 days ahead, so for them the deposit is non-refundable from the start.
+This framing changed how I built the pipeline:
 
-**What this framing implies for the pipeline:**
+1. **What I predict.** I kept the normal `is_canceled` column. It's simple, but it isn't a
+   perfect match for my policy: a guest who cancels months in advance costs the hotel nothing
+   (they get their deposit back), yet the model treats them the same as someone who cancels the
+   day before.
+2. **Splitting by time.** In real life the hotel learns from past bookings and predicts future
+   ones. If I split the data randomly, the model would train on bookings from 2017 and be tested
+   on 2015, which is like seeing the future, and the results would look better than they really
+   are. So I split by arrival date: the oldest 70% for training, the next 15% for validation and
+   the newest 15% for the final test.
+3. **Only information known at booking time.** I removed any column the hotel wouldn't know on
+   the day of the booking (more on this below).
+4. **Removing `deposit_type`.** This column shows whether the hotel already asked the guest for a
+   deposit. Since my model is supposed to make that decision, it shouldn't be given the answer.
+5. **Choosing the threshold by cost, not by accuracy.** The two possible mistakes don't cost the
+   same. A typical booking is worth about €265 (€100 a night × 3 nights):
+   - If the model misses a cancellation, the hotel loses money only when the guest cancels in
+     the last 14 days, which is about 19% of cancellations. So I estimate this mistake costs
+     0.19 × €265 ≈ **€50**.
+   - If the model asks a reliable guest for a deposit by mistake, some of them might get annoyed
+     and book somewhere else. I assumed 1 in 10 would, so this mistake costs 0.10 × €265 ≈ **€25**.
 
-1. **Target definition.** I kept `is_canceled` (any cancellation). This is simple, but
-   under my policy an early cancellation costs the hotel nothing (the deposit is refunded),
-   while the model treats it the same as a late one. Predicting only late cancellations
-   would match the policy more closely (see Limitations).
-2. **Time-based split:** The hotel would train on past bookings and use the model
-   on future ones. A random split would put 2017 bookings in training and test on 2015–16,
-   letting the model "see the future" and overstating its performance. I split by
-   arrival date: oldest 70% train, next 15% validation, newest 15% test.
-3. **Leakage rule.** Every input must be known on the day of booking.
-4. **`deposit_type` removed.** The model's job is to *decide* who pays a deposit, so it
-   should not be given the deposit decision the hotel already made.
-5. **Decision threshold set by business cost** The two errors cost different
-   amounts. With a typical booking worth about €265 (median €100/night × 3 nights):
-   - **Missed cancellation (false negative) ≈ €50:** only ~19% of cancellations fall inside
-     the 14-day window where money is lost, so 0.19 × €265 ≈ €50.
-   - **False alarm (false positive) ≈ €25:** I assume ~10% of reliable guests asked for a
-     deposit would book elsewhere, so 0.10 × €265 ≈ €25.
-
-   Because a missed cancellation costs twice as  much as a false alarm, the theoretical best threshold is below 0.5:
-   25 / (25 + 50) ≈ 0.33. I choose the threshold on the validation set by minimising
-   the total cost, and the dashboard lets you move it and see the cost change.
+   These numbers are my estimates, not facts. Since missing a cancellation costs twice as much
+   as a false alarm, it makes sense to ask for a deposit a bit more easily than at 50% risk; in
+   theory the best cut-off is about 33% (25 / (25 + 50)). I picked the threshold on the
+   validation data by finding the one with the lowest total cost, and the dashboard has a slider
+   to see how the cost changes.
 
 ## Data preparation & feature engineering
 
-### Data quality
+### Cleaning
 
-- **Missing values:** `children` (4 rows) → 0; `country` (488 rows) → "Unknown" (kept as its
-  own group rather than deleting the bookings); missing `agent`/`company` means the booking
-  was made without one, so it becomes a yes/no feature.
-- **Removed 432 broken rows:** 0 nights, 0 guests, or a price above €1,000/night (one booking
-  was €5,400/night, clearly an error). Impact: 0.5% of City Hotel rows.
-- **Kept 25,902 duplicate rows.** Without a booking ID, identical rows most likely represent
-  several rooms in the same group booking. Each is a real room that can sit empty, and they
-  cancel 61% of the time vs 29% for the rest, so removing them would hide an important part
-  of the problem. Because I split by date and copies share the same arrival date, they end
-  up on the same side of the split and cannot inflate the test score.
+- `children` was missing in 4 rows, so I set them to 0. `country` was missing in 488 rows, so I
+  labelled them "Unknown" instead of deleting them.
+- An empty `agent` or `company` means the booking was made without one, so I turned these into
+  yes/no columns.
+- I removed 432 bookings that made no sense: 0 nights, 0 guests, or a price over €1,000 a night
+  (one was €5,400). That's only 0.5% of the city hotel data.
+- I kept 25,902 rows that are exact copies of other rows. There's no booking ID, so these are
+  most likely several identical rooms in one group booking. Each one is a real room that could
+  end up empty, and they cancel a lot (61% vs 29% for the rest), so removing them would hide part
+  of the problem. Because I split by date and copies have the same arrival date, they always end
+  up in the same group, so they don't make the test results look better than they are.
 
-### Leakage: columns removed because they are not known at booking time
+### Removing columns the hotel wouldn't know yet (leakage)
 
-| Column | Evidence / reason |
+The rule I used: *on the day the guest books, would the hotel already know this?* If not, the
+column is "leaking" the answer and has to go.
+
+| Column | Why I removed it |
 |---|---|
-| `reservation_status` | Matches the target perfectly ("Canceled"/"No-Show" ⇔ `is_canceled = 1`): it *is* the answer |
-| `reservation_status_date` | Date of cancellation or check-out, which is in the future |
-| `assigned_room_type` | Room given at check-in |
-| `booking_changes` | Counts changes made after booking (always 0 on booking day) |
-| `required_car_parking_spaces` | **0% cancellations among 492 bookings**: too perfect; most likely recorded at arrival |
-| `total_of_special_requests` | 55% cancel with no requests vs ~22% with one or more; requests can be added after booking, so I removed it to be safe |
+| `reservation_status` | It says "Canceled" or "Check-Out", which is basically the answer itself. It matched the target perfectly |
+| `reservation_status_date` | The date of cancellation or check-out, which happens later |
+| `assigned_room_type` | The room the guest actually got at check-in |
+| `booking_changes` | Counts changes made after booking, so it's always 0 on the booking day |
+| `required_car_parking_spaces` | Not one of the 492 bookings that asked for parking was cancelled. That's too perfect, so it's probably only recorded when the guest arrives |
+| `total_of_special_requests` | Guests with no requests cancel 55% of the time vs about 22% with requests, but requests can be added after booking, so I removed it to be safe |
 
-`days_in_waiting_list` was **kept**: it is known when the booking is confirmed, which is
-exactly when the deposit decision is made.
+I kept `days_in_waiting_list` because the hotel knows it when the booking is confirmed, which is
+exactly when it would decide about the deposit.
 
-`deposit_type` was removed for framing reasons (above). Interestingly, "Non Refund"
-bookings cancel 99.8% of the time; most are groups and tour operators, who likely reserve
-blocks of rooms and release the ones they don't use.
+### New features
 
-### Engineered features
+Each new feature only uses information from its own row, so nothing from the test period can
+sneak into training.
 
-Every feature is computed from a single row, so nothing from the test period can leak in.
-
-| Feature | Evidence (cancellation rate) | Why |
+| Feature | What the data shows | Why I added it |
 |---|---|---|
-| `total_nights` | 1 night 30%; 2–3 nights 47%; 8+ nights 54% | Length of stay as one number |
-| `has_agent`, `has_company` | Company bookings 21% vs 43% | IDs are labels, not quantities (agent 240 is not "more" than agent 9) |
-| `cancelled_before` | 94% vs 38% | Past behaviour predicts future behaviour |
-| `log_lead_time` | ≤7 days 12% … >180 days 65% | Lead time is very skewed (0 to 600+ days); the log makes early differences matter more |
-| `arrival_weekday` | Thursday 49% vs Sunday 34% | Business vs leisure travel patterns |
-| `country`: top 10 + "infrequent" | Portugal 66% vs abroad 27% | 133 countries is too many for 20k rows; the Portugal column acts as a "domestic guest" flag |
-| `revenue_at_risk` = price × nights | Weak alone | Links the model to the money at stake |
+| `total_nights` | 1 night: 30% cancel; 2–3 nights: 47%; 8+ nights: 54% | Weekend + weekday nights in one number |
+| `has_agent`, `has_company` | Company bookings cancel 21% vs 43% | The original columns were ID numbers, which are just labels, so a yes/no makes more sense |
+| `cancelled_before` | 94% vs 38% | People who cancelled before tend to cancel again |
+| `log_lead_time` | Booked 7 days or less ahead: 12%; more than 180 days: 65% | Lead time goes from 0 to over 600 days. Taking the log stops the very big values from dominating |
+| `arrival_weekday` | Thursday: 49%; Sunday: 34% | Business and leisure trips behave differently |
+| `country` (top 10 + "other") | Portugal: 66% vs 27% for other countries | 133 countries is too many for 20,000 rows. The Portugal column works as a "local guest" flag |
+| `revenue_at_risk` (price × nights) | Not strong by itself | Connects the model to how much money is at stake |
 
-I did not add a separate `is_domestic` column because it would be an exact copy of the
-Portugal column, and duplicated columns confuse a linear model.
+I didn't create a separate "is from Portugal" column, because it would be an exact copy of the
+Portugal country column, and a linear model gets confused by duplicate columns.
 
-**Removed date columns:** `arrival_date_year` (the test period is later, so the model would
-meet a year it never saw), `arrival_date_week_number` (redundant, and treated as a quantity
-it makes week 52 "bigger" than week 1), `arrival_date_day_of_month` (no business meaning;
-weekday captures what matters) and `arrival_date_month` (weak effect, 36–46%, consistent with
-the City Hotel not being very seasonal).
+I also removed some date columns. The year, because the test data comes later, so the model would
+see a year it never trained on, and the year doesn't help predict future bookings. The week
+number, because it repeats the date and the model would treat week 52 as "bigger" than week 1.
+The day of the month, because it has no real meaning, while the weekday does. And the month,
+because the effect was small (36% to 46%), which fits with the city hotel not being very seasonal.
 
-### Split and preprocessing
+### Splitting and preparing the data
 
-| Split | Rows | Arrival dates | Cancellation rate |
+| Group | Bookings | Arrival dates | Cancelled |
 |---|---|---|---|
-| Train | 14,000 | 2015-07-01 → 2017-02-18 | 41.3% |
-| Validation | 3,015 | 2017-02-19 → 2017-05-24 | 45.1% |
-| Test | 2,985 | 2017-05-25 → 2017-08-31 | 41.0% |
+| Training | 14,000 | 1 Jul 2015 – 18 Feb 2017 | 41.3% |
+| Validation | 3,015 | 19 Feb 2017 – 24 May 2017 | 45.1% |
+| Test | 2,985 | 25 May 2017 – 31 Aug 2017 | 41.0% |
 
-- The cut is made on dates, not row numbers, so all bookings arriving on the same day stay
-  together.
-- `StandardScaler` for numeric columns (mean 0, std 1, essential for gradient descent) and
-  `OneHotEncoder` for categories (fewer than 20 occurrences → "infrequent"; country limited
-  to the top 10). Both are fitted on the training set only, then applied to validation
-  and test. Result: 20 features → 59 input columns.
-- Validation is used to choose C, the learning rate and the threshold. The test set is used
-  once, at the end.
+I split on dates rather than row numbers, so all bookings arriving on the same day stay together.
+I used the validation group to choose the settings (C, learning rate and threshold) and only used
+the test group once, at the very end.
+
+Before training, I scaled the number columns so they all have a similar range, which matters a
+lot for PyTorch, and turned the text columns into 0/1 columns. Categories that appear fewer than
+20 times are grouped together. Both steps learn only from the training data and are then applied
+to validation and test. In the end the model gets 59 input columns.
 
 ## Modeling: three implementations, one model
 
-**Model: logistic regression.** The target is binary, so logistic rather than linear
-regression. It outputs a probability (not just yes/no), which the hotel can turn into a
-deposit decision with a cost-based threshold, and its weights are interpretable.
+I used **logistic regression** because my target is yes/no. It gives a probability, not just a
+yes or no, so the hotel can decide where to draw the line based on cost. It's also easy to
+interpret, because each feature gets a weight.
 
-**The three implementations, trained on the same 59 columns and the same split:**
+I trained the same model three ways, on exactly the same data and split:
 
-1. **scikit-learn** `LogisticRegression`: C tried in {0.01, 0.1, 1, 10}; validation log loss
-   0.4918 / 0.4759 / 0.4745 / 0.4746 → C = 1. Results from 0.1 to 10 are almost
-   identical, so the model is not overfitting much.
-2. **Manual PyTorch loop:** weights and bias created by hand (all 0), forward pass
-   (`X @ w + b`, then sigmoid), binary cross-entropy written by hand plus the same L2
-   penalty as sklearn (rescaled to `1 / (C·n)` because I use the mean loss instead of the
-   sum), `loss.backward()`, and a manual gradient-descent update. Full batch, 2,000 epochs.
-   Learning rate tried in {0.1, 0.5, 1.0}; validation log loss 0.4766 / 0.4747 / 0.4745
-   → **lr = 1.0** (0.1 was too slow to converge in 2,000 epochs).
-3. **Standard PyTorch:** `nn.Module` with one `nn.Linear` layer, `BCEWithLogitsLoss` and
-   `torch.optim.SGD`, with the same C, learning rate and number of epochs. Weights start at
-   0 so the comparison with the manual version is fair. The L2 penalty is added to the loss
-   by hand instead of using `weight_decay`, because `weight_decay` would also penalise the
-   bias, which sklearn does not.
+1. **scikit-learn:** I tried four regularisation strengths (C = 0.01, 0.1, 1 and 10) and kept
+   the one with the best validation log loss, C = 1 (0.4745). C = 0.1 and C = 10 were almost the
+   same, which suggests the model isn't overfitting much.
+2. **Manual PyTorch:** The weights start at 0, the model multiplies
+   the features by the weights, turns the result into a probability with the sigmoid, calculates
+   the loss, uses `loss.backward()` to get the gradients, and updates the weights. I
+   added the same regularisation as sklearn so both solve the same problem. I ran it for 2,000
+   rounds and tried three learning rates (0.1, 0.5 and 1.0). 1.0 was best; 0.1 was too slow to
+   finish learning in 2,000 rounds.
+3. **Standard PyTorch:** the same model built with PyTorch's ready made pieces: `nn.Linear`,
+   `BCEWithLogitsLoss` and the `SGD` optimiser, with the same settings. I also started the
+   weights at 0 so I could compare it fairly.
 
-Both PyTorch versions start at a training loss of 0.6931 (= ln 2, a 50/50 guess, because
-all weights start at 0) and end at 0.4332. All models and the fitted preprocessor are saved
-to `models/`; the evaluation and the dashboard only load them.
+Both PyTorch models started with a loss of 0.693, which is what you get by guessing 50% for
+everyone, and went down to 0.433, which shows they learned. All the trained models are saved in
+the `models/` folder, and the evaluation and dashboard only load them; they never retrain.
 
 ### Results on the test set (2,985 bookings, 25 May – 31 Aug 2017)
 
-| Model | Accuracy @0.5 | ROC-AUC | Log loss | Business cost @0.5 |
+| Model | Accuracy (cut-off 0.5) | ROC-AUC | Log loss | Business cost (cut-off 0.5) |
 |---|---|---|---|---|
-| Naive baseline (always predicts the training rate, 41.3%) | 0.590 | 0.500 | 0.677 | €61,200 (never asks) |
+| Naive baseline (always predicts 41.3%) | 0.590 | 0.500 | 0.677 | €61,200 |
 | scikit-learn | 0.728 | 0.809 | 0.523 | €29,400 |
 | Manual PyTorch | 0.727 | 0.809 | 0.523 | €29,525 |
 | Standard PyTorch | 0.727 | 0.809 | 0.523 | €29,525 |
 
-For context: asking every guest for a deposit costs €44,025, which is the best the
-baseline can do with a cost-based threshold. The model cuts the cost by about 52% compared
-with never asking, and saves about €14,600 compared with asking everyone.
+The baseline never asks for a deposit, which costs €61,200. Asking everyone costs €44,025. My
+model costs about €29,400, roughly half of doing nothing and about €14,600 less than asking
+everyone.
 
 ### Do the three agree?
 
-- **Manual vs standard PyTorch:** They are very similar, the largest weight difference
-  is 0.000005 and they make the same decision for 100% of bookings. They run the same
-  algorithm from the same starting point; the tiny difference comes from the `eps = 1e-7`
-  in my hand-written loss versus PyTorch's numerically stable formula.
-- **PyTorch vs scikit-learn:** Here they have the same predictions, but different weights for rare categories. On
-  validation, probabilities differ by 0.0017 on average and 99.8% of decisions are the
-  same. But some weights differ a lot, for example `distribution_channel_infrequent`:
-  +1.39 in sklearn vs +0.26 in PyTorch.
+**My manual PyTorch and standard PyTorch are basically the same.** The biggest difference between
+any of their weights is 0.000005, and they make the same decision for every booking. That shows that the manual loop does what PyTorch's built-in tools do. 
 
-  **Investigation:** all the large differences are in categories with very few training
-  rows (1, 2, 12 and 35 bookings). With so few examples, the loss is almost flat in those
-  directions, so plain gradient descent moves very slowly there and has not finished after
-  2,000 epochs. sklearn's L-BFGS optimiser uses curvature information and converges further.
-  So the difference comes from the optimiser, not the model, and it barely affects
-  predictions because almost no booking has those values.
-  
-- **Consequence for interpretation:** the second-largest sklearn weight is based on only
-  2 bookings, so it is noise, not a business insight. The reliable signals are
-  Portuguese guests (+1.77), a previous cancellation (+1.34) and booking far in advance
-  (+0.86); direct bookings cancel less (−0.96).
+**PyTorch and sklearn make the same predictions but don't have exactly the same weights.** Their
+probabilities differ by only 0.0017 on average, and they agree on 99.8% of decisions.
+
+When I looked into it, all the big differences were in categories with very few bookings (between
+1 and 35 in the training data). With so few examples, gradient descent learns those weights very
+slowly and hadn't finished after 2,000 rounds. sklearn uses a smarter optimiser that gets there
+faster. So the difference comes from how the models are trained, not from the model itself, and
+it hardly changes the predictions, because almost no bookings fall into those categories.
 
 ### Dashboard
 
-`uv run python main.py app` opens a Gradio dashboard that only loads the saved models:
-(1) the three-model comparison with a predicted-vs-actual (calibration) plot and probability
-histograms; (2) target and feature distributions; (3) a threshold slider that updates the
-confusion matrix and the business cost in euros, with a cost-vs-threshold curve compared to
-"never ask" and "always ask".
+Running `uv run python main.py app` opens a Gradio dashboard that only loads the saved models. It
+has three tabs: (1) the three models compared, with a chart of predicted vs actual cancellation
+rates; (2) charts of the target and of any feature; and (3) a threshold slider that updates the
+confusion matrix and the cost in euros.
 
 ## Limitations & next steps
 
-| Limitation | What I found | How I would address it |
+| Problem | What I found | What I would do with more time |
 |---|---|---|
-| **Drift over time** | On the test period the model predicted 46% of bookings would cancel, but only 41% did; ROC-AUC fell from 0.849 (validation) to 0.809 (test). The calibration plot sits below the diagonal | Retrain on a rolling window (e.g. the last 12 months) every season, and monitor predicted vs actual cancellation rate each month |
-| **The validation threshold did not carry over** | The cheapest threshold on validation was 0.29, but on test it cost €29,950, slightly *more* than 0.5 (€29,400); the test curve is lowest around 0.4. I did not re-tune on test, as that would make the final score dishonest | Choose the threshold with rolling (walk-forward) validation over several periods instead of one, so it is less sensitive to one season |
-| **Test set is summer only** | The test score reflects high season, not the whole year | Use walk-forward evaluation across several test windows covering all seasons |
-| **Target doesn't match the policy exactly** | Early cancellations cost nothing under my policy but count the same as late ones | Build a new target: cancelled within 14 days of arrival or no-show (constructed from the cancellation date), and compare business cost |
-| **Cost assumptions** | The 10% of guests who would leave if asked for a deposit is a guess | Run a small A/B test (ask a random group for deposits) to measure the real walk-away rate, then update the costs |
-| **Possibly undetected leakage** | Removing parking and special requests was a judgement call based on suspicious patterns | Confirm with the hotel when each field is recorded, and keep only fields filled in at booking time |
-| **Unreliable rare-category weights** | Weights based on 1–35 bookings | Raise `min_frequency`, or merge rare channels and segments into broader groups |
-| **Group bookings counted per room** | 25,902 duplicates give large groups more weight | With a booking ID, model group bookings separately or weight them per booking |
-| **Old data, one hotel** | 2015–2017 data from one Lisbon hotel; booking behaviour may have changed since | Retrain on recent data before using it, and test on another hotel before generalising |
+| **Behaviour changed over time** | In the test period the model expected 46% of bookings to cancel, but only 41% did. The ROC-AUC also dropped from 0.849 to 0.809 | Retrain regularly on the most recent 12 months, and check every month whether predicted and real cancellation rates still match |
+| **The best threshold didn't carry over** | The cheapest threshold on validation was 0.29, but on the test set it cost €29,950, slightly more than using 0.5 (€29,400).| Choose the threshold using several time periods instead of just one, so one season doesn't decide it |
+| **The test set is only summer** | The results show high season, not the whole year | Test on several periods across different seasons |
+| **My target doesn't match my policy exactly** | Early cancellations cost nothing under my policy, but the model counts them like late ones | Create a new target: "cancelled in the last 14 days or didn't show up", and compare the cost |
+| **The costs are guesses** | The idea that 1 in 10 guests would leave over a deposit is an assumption | Test it: ask a random group of guests for a deposit and measure how many actually leave |
+| **There might be more leakage** | Removing parking and special requests was a judgement call | Ask the hotel when each field is filled in, and only keep the ones known at booking time |
+| **Some weights aren't reliable** | Some categories have only 1 to 35 bookings | Group rare categories together more aggressively |
+| **Group bookings count once per room** | The 25,902 repeated rows give big groups more weight | With a booking ID, treat each group booking as one decision |
+
+
 
 ## AI use disclosure
 
