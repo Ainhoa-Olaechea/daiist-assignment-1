@@ -39,6 +39,8 @@ from features import CATEGORICAL_FEATURES, NUMERIC_FEATURES, TARGET, get_X_y
 
 LABELS = {"sklearn": "sklearn", "manual_torch": "Manual PyTorch",
           "standard_torch": "Standard PyTorch"}
+# Same colours everywhere: red = cancelled, blue = stayed
+OUTCOME_COLORS = {"Cancelled": "#d62728", "Stayed": "#1f77b4"}
 
 # ---------------------------------------------------------------
 # Load everything ONCE at startup (inference only, no training)
@@ -99,6 +101,7 @@ def probability_histogram(model_label):
                        "Actual": np.where(y_test == 1, "Cancelled", "Stayed")})
     fig = px.histogram(df, x="P(cancel)", color="Actual", nbins=40,
                        barmode="overlay", opacity=0.6,
+                       color_discrete_map=OUTCOME_COLORS,
                        title=f"{model_label}: predicted probability by actual outcome")
     fig.update_layout(height=400)
     return fig
@@ -125,6 +128,7 @@ def feature_plot(feature):
     if feature in NUMERIC_FEATURES:
         fig = px.histogram(df, x=feature, color="Outcome", nbins=40,
                            barmode="overlay", opacity=0.6,
+                           color_discrete_map=OUTCOME_COLORS,
                            title=f"{feature}: distribution by outcome (train set)")
     else:
         rate = (df.groupby(feature)[TARGET].agg(["mean", "size"])
