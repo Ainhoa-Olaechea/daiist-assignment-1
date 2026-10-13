@@ -160,13 +160,13 @@ deposit decision with a cost-based threshold, and its weights are interpretable.
 **The three implementations, trained on the same 59 columns and the same split:**
 
 1. **scikit-learn** `LogisticRegression`: C tried in {0.01, 0.1, 1, 10}; validation log loss
-   0.4918 / 0.4759 / **0.4745** / 0.4746 → **C = 1**. Results from 0.1 to 10 are almost
+   0.4918 / 0.4759 / 0.4745 / 0.4746 → C = 1. Results from 0.1 to 10 are almost
    identical, so the model is not overfitting much.
 2. **Manual PyTorch loop:** weights and bias created by hand (all 0), forward pass
    (`X @ w + b`, then sigmoid), binary cross-entropy written by hand plus the same L2
    penalty as sklearn (rescaled to `1 / (C·n)` because I use the mean loss instead of the
    sum), `loss.backward()`, and a manual gradient-descent update. Full batch, 2,000 epochs.
-   Learning rate tried in {0.1, 0.5, 1.0}; validation log loss 0.4766 / 0.4747 / **0.4745**
+   Learning rate tried in {0.1, 0.5, 1.0}; validation log loss 0.4766 / 0.4747 / 0.4745
    → **lr = 1.0** (0.1 was too slow to converge in 2,000 epochs).
 3. **Standard PyTorch:** `nn.Module` with one `nn.Linear` layer, `BCEWithLogitsLoss` and
    `torch.optim.SGD`, with the same C, learning rate and number of epochs. Weights start at
@@ -183,7 +183,7 @@ to `models/`; the evaluation and the dashboard only load them.
 | Model | Accuracy @0.5 | ROC-AUC | Log loss | Business cost @0.5 |
 |---|---|---|---|---|
 | Naive baseline (always predicts the training rate, 41.3%) | 0.590 | 0.500 | 0.677 | €61,200 (never asks) |
-| scikit-learn | 0.728 | 0.809 | 0.523 | **€29,400** |
+| scikit-learn | 0.728 | 0.809 | 0.523 | €29,400 |
 | Manual PyTorch | 0.727 | 0.809 | 0.523 | €29,525 |
 | Standard PyTorch | 0.727 | 0.809 | 0.523 | €29,525 |
 
@@ -193,11 +193,11 @@ with never asking, and saves about €14,600 compared with asking everyone.
 
 ### Do the three agree?
 
-- **Manual vs standard PyTorch: yes, practically identical.** The largest weight difference
+- **Manual vs standard PyTorch:** They are very similar, the largest weight difference
   is 0.000005 and they make the same decision for 100% of bookings. They run the same
   algorithm from the same starting point; the tiny difference comes from the `eps = 1e-7`
   in my hand-written loss versus PyTorch's numerically stable formula.
-- **PyTorch vs scikit-learn: same predictions, different weights for rare categories.** On
+- **PyTorch vs scikit-learn:** Here they have the same predictions, but different weights for rare categories. On
   validation, probabilities differ by 0.0017 on average and 99.8% of decisions are the
   same. But some weights differ a lot, for example `distribution_channel_infrequent`:
   +1.39 in sklearn vs +0.26 in PyTorch.
@@ -206,10 +206,11 @@ with never asking, and saves about €14,600 compared with asking everyone.
   rows (1, 2, 12 and 35 bookings). With so few examples, the loss is almost flat in those
   directions, so plain gradient descent moves very slowly there and has not finished after
   2,000 epochs. sklearn's L-BFGS optimiser uses curvature information and converges further.
-  So the difference comes from the **optimiser, not the model**, and it barely affects
+  So the difference comes from the optimiser, not the model, and it barely affects
   predictions because almost no booking has those values.
+  
 - **Consequence for interpretation:** the second-largest sklearn weight is based on only
-  **2 bookings**, so it is noise, not a business insight. The reliable signals are
+  2 bookings, so it is noise, not a business insight. The reliable signals are
   Portuguese guests (+1.77), a previous cancellation (+1.34) and booking far in advance
   (+0.86); direct bookings cancel less (−0.96).
 
